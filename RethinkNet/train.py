@@ -15,8 +15,10 @@ from skmultilearn import dataset
 
 def arch_001(input_size , output_size, dropout = 0.25, activation = nn.Sigmoid, rnn_unit = 'lstm'):
     embed_size = 128
-    # input_layer = nn.Linear(input_size, embed_size)
-    # input_size = embed_size
+   
+    input_layer = nn.Linear(input_size, embed_size)
+    input_size = embed_size
+   
     if rnn_unit == 'rnn':
         rnn_unit = nn.RNN(input_size, embed_size, 1)#, dropout = dropout )
     elif rnn_unit == 'lstm':
@@ -25,14 +27,13 @@ def arch_001(input_size , output_size, dropout = 0.25, activation = nn.Sigmoid, 
         rnn_unit = nn.GRU(input_size, embed_size, 1) #, dropout = dropout)
     else : NotImplementedError()
 
-
     RNN = rnn_unit
 
     dec = nn.Sequential(
         nn.Linear(embed_size, output_size),
         activation()
     )
-    return RNN, dec, embed_size
+    return input_layer, RNN, dec, embed_size
 
 class RethinkNet(nn.Module):
     def __init__(self, input_size, output_size, architecture = "arch_001", rethink_time = 1, rnn_unit = 'lstm', reweight = 'None', device = 'cpu'):
@@ -40,7 +41,7 @@ class RethinkNet(nn.Module):
         self.input_size = input_size
         self.output_size = output_size
         self.rnn_unit = rnn_unit
-        self.rnn, self.dec, self.embed_size = globals()[architecture](self.input_size, self.output_size, rnn_unit = rnn_unit)
+        self.input_layer, self.rnn, self.dec, self.embed_size = globals()[architecture](self.input_size, self.output_size, rnn_unit = rnn_unit)
         self.b = rethink_time+1
         self.reweight = reweight
         self.device = device
@@ -56,10 +57,17 @@ class RethinkNet(nn.Module):
 
     def predict_proba(self, X):
         hist = [0 for _ in range(self.b)]
-        hidden = self.init_hidden(X.shape[1])
+
+        h_0, c_0 = self.init_hidden(X.shape[1])
+        hidden = (h_0, c_0)
+        if(self.rnn_unit == 'rnn'): hidden = h_0
+
+        X_embed = self.input_layer(X)
+        X_embed = self.prep_X(X_embed)
+
         for i in range(self.b):
-            embed, hidden = self.rnn(X, hidden)
-            out = self.dec(embed)
+            embed, hidden = self.rnn(X_embed, hidden)
+            out = self.dec(torch.squeeze(embed))
             hist[i] = copy.deepcopy(out)
 
         return hist
@@ -70,12 +78,17 @@ class RethinkNet(nn.Module):
         return hist
 
     def forward(self, X):
+        output = [0 for _ in range(self.b)]
+
         h_0, c_0 = self.init_hidden(X.shape[1])
         hidden = (h_0, c_0)
         if(self.rnn_unit == 'rnn'): hidden = h_0
-        output = [0 for _ in range(self.b)]
+
+        X_embed = self.input_layer(X)
+        X_embed = self.prep_X(X_embed)
+
         for i in range(self.b):
-            embed, hidden = self.rnn(X, hidden)
+            embed, hidden = self.rnn(X_embed, hidden)
             out = self.dec(torch.squeeze(embed))
             output[i] = out
         output = torch.cat(output, axis = 0)
@@ -105,7 +118,6 @@ if __name__ ==  "__main__":
     for _ in range(10000):
         for X, labels in train_loader:
             optimizer.zero_grad()
-            X = model.prep_X(X)
             X = X.to(device).double()
             labels = model.prep_Y(labels)
             labels = labels.to(device).double()
@@ -117,7 +129,6 @@ if __name__ ==  "__main__":
 
     with torch.no_grad():
         for X, labels in test_loader:
-            X = model.prep_X(X)
             X = X.to(device).double()
             labels = labels.to(device).double()
             outputs = model.predict_proba(X)
