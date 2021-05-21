@@ -86,7 +86,7 @@ if __name__ ==  "__main__":
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')  # torch.device('cpu')
     device = 'cpu'
     print("Example")
-    from RethinkNet_Util import Nadam, log_likelihood_loss, jaccard_score, MultilabelDataset
+    from Utils import Nadam, log_likelihood_loss, jaccard_score, MultilabelDataset
     train_dataset = MultilabelDataset(dataset_name='scene', opt='undivided_train', random_state=7)
     test_dataset = MultilabelDataset(dataset_name='scene', opt='undivided_test', random_state=7)
     train_loader = torch.utils.data.DataLoader(dataset=train_dataset,
