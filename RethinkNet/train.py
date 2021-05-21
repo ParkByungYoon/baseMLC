@@ -58,7 +58,7 @@ class RethinkNet(nn.Module):
     def predict_proba(self, X):
         hist = [0 for _ in range(self.b)]
 
-        h_0, c_0 = self.init_hidden(X.shape[1])
+        h_0, c_0 = self.init_hidden(self.embed_size)
         hidden = (h_0, c_0)
         if(self.rnn_unit == 'rnn'): hidden = h_0
 
@@ -80,7 +80,7 @@ class RethinkNet(nn.Module):
     def forward(self, X):
         output = [0 for _ in range(self.b)]
 
-        h_0, c_0 = self.init_hidden(X.shape[1])
+        h_0, c_0 = self.init_hidden(self.embed_size)
         hidden = (h_0, c_0)
         if(self.rnn_unit == 'rnn'): hidden = h_0
 
