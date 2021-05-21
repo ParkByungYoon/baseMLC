@@ -36,7 +36,7 @@ def arch_001(input_size , output_size, dropout = 0.25, activation = nn.Sigmoid, 
     return input_layer, RNN, dec, embed_size
 
 class RethinkNet(nn.Module):
-    def __init__(self, input_size, output_size, architecture = "arch_001", rethink_time = 1, rnn_unit = 'lstm', reweight = 'None', device = 'cpu'):
+    def __init__(self, input_size, output_size, architecture = "arch_001", rethink_time = 2, rnn_unit = 'lstm', reweight = 'None', device = 'cpu'):
         super(RethinkNet, self).__init__()
         self.input_size = input_size
         self.output_size = output_size
@@ -58,7 +58,7 @@ class RethinkNet(nn.Module):
     def predict_proba(self, X):
         hist = [0 for _ in range(self.b)]
 
-        h_0, c_0 = self.init_hidden(self.embed_size)
+        h_0, c_0 = self.init_hidden(X.shape[0])
         hidden = (h_0, c_0)
         if(self.rnn_unit == 'rnn'): hidden = h_0
 
@@ -80,7 +80,7 @@ class RethinkNet(nn.Module):
     def forward(self, X):
         output = [0 for _ in range(self.b)]
 
-        h_0, c_0 = self.init_hidden(self.embed_size)
+        h_0, c_0 = self.init_hidden(X.shape[0])
         hidden = (h_0, c_0)
         if(self.rnn_unit == 'rnn'): hidden = h_0
 
@@ -97,7 +97,7 @@ class RethinkNet(nn.Module):
 
 if __name__ ==  "__main__":
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')  # torch.device('cpu')
-    device = 'cpu'
+    #device = 'cpu'
     print("Example")
     from Utils import Nadam, log_likelihood_loss, jaccard_score, MultilabelDataset
     train_dataset = MultilabelDataset(dataset_name='scene', opt='undivided_train', random_state=7)
@@ -115,7 +115,7 @@ if __name__ ==  "__main__":
 
 
     optimizer =  Nadam([{'params': model.rnn.parameters(), 'weight_decay': 1e-05}, {'params':model.dec.parameters()}])
-    for _ in range(10000):
+    for _ in range(1000):
         for X, labels in train_loader:
             optimizer.zero_grad()
             X = X.to(device).double()
