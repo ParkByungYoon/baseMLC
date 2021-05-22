@@ -13,13 +13,13 @@ from skmultilearn import dataset
 import sklearn.metrics as metrics
 from Utils import Nadam, log_likelihood_loss, jaccard_score,  EarlyStopping
 
+import sys
 if len(sys.argv)> 3 :
     from Utils import ExternalDataset as Dataset
 else:
     from Utils import MultilabelDataset as Dataset
 
 from RethinkNet import RethinkNet
-import sys
 
 dataset_name = sys.argv[1]
 
