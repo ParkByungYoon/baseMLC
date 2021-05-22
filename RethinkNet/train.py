@@ -10,112 +10,19 @@ import pandas as pd
 import sklearn
 import sklearn.metrics as metrics
 from skmultilearn import dataset
+import sklearn.metrics as metrics
+from Utils import Nadam, log_likelihood_loss, jaccard_score, MultilabelDataset, EarlyStopping
+from RethinkNet import RethinkNet
+import sys
 
-######################## RethinkNet ########################
+dataset_name = sys.argv[1]
 
-def arch_001(input_size , output_size, dropout = 0.25, activation = nn.Sigmoid, rnn_unit = 'lstm'):
-    embed_size = 128
-   
-    input_layer = nn.Linear(input_size, embed_size)
-    input_size = embed_size
-   
-    if rnn_unit == 'rnn':
-        rnn_unit = nn.RNN(input_size, embed_size, 1)#, dropout = dropout )
-    elif rnn_unit == 'lstm':
-        rnn_unit = nn.LSTM(input_size, embed_size, 1)#, dropout = dropout)
-    elif rnn_unit == 'gru' :
-        rnn_unit = nn.GRU(input_size, embed_size, 1) #, dropout = dropout)
-    else : NotImplementedError()
-
-    RNN = rnn_unit
-
-    dec = nn.Sequential(
-        nn.Linear(embed_size, output_size),
-        activation()
-    )
-    return input_layer, RNN, dec, embed_size
-
-class RethinkNet(nn.Module):
-    def __init__(self, input_size, output_size, architecture = "arch_001", rethink_time = 2, rnn_unit = 'lstm', reweight = 'None', device = 'cpu'):
-        super(RethinkNet, self).__init__()
-        self.input_size = input_size
-        self.output_size = output_size
-        self.rnn_unit = rnn_unit
-        self.input_layer, self.rnn, self.dec, self.embed_size = globals()[architecture](self.input_size, self.output_size, rnn_unit = rnn_unit)
-        self.b = rethink_time+1
-        self.reweight = reweight
-        self.device = device
-
-    def prep_Y(self, Y):
-        return torch.cat([Y for _ in range(self.b)], axis = 0)
-
-    def prep_X(self, X):
-        return X.view(1, X.shape[0], -1)
-
-    def init_hidden(self,batch_size):
-        return torch.zeros(1, batch_size, self.embed_size).to(self.device).double(), torch.zeros(1, batch_size, self.embed_size).to(self.device).double()
-
-    def predict_proba(self, X):
-        hist = [0 for _ in range(self.b)]
-
-        h_0, c_0 = self.init_hidden(X.shape[0])
-        hidden = (h_0, c_0)
-        if(self.rnn_unit == 'rnn'): hidden = h_0
-
-        X_embed = self.input_layer(X)
-        X_embed = self.prep_X(X_embed)
-
-        for i in range(self.b):
-            embed, hidden = self.rnn(X_embed, hidden)
-            out = self.dec(torch.squeeze(embed))
-            hist[i] = copy.deepcopy(out)
-
-        return hist
-
-    def predict(self, X):
-        hist = self.predict_proba(X)
-        hist = [(i > Variable(torch.Tensor([0.5]).to(DEVICE))).double() * 1 for i in hist]
-        return hist
-
-    def forward(self, X):
-        output = [0 for _ in range(self.b)]
-
-        h_0, c_0 = self.init_hidden(X.shape[0])
-        hidden = (h_0, c_0)
-        if(self.rnn_unit == 'rnn'): hidden = h_0
-
-        X_embed = self.input_layer(X)
-        X_embed = self.prep_X(X_embed)
-
-        for i in range(self.b):
-            embed, hidden = self.rnn(X_embed, hidden)
-            out = self.dec(torch.squeeze(embed))
-            output[i] = out
-        output = torch.cat(output, axis = 0)
-        # for prediction
-        return output
-
-if __name__ ==  "__main__":
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')  # torch.device('cpu')
-    #device = 'cpu'
-    print("Example")
-    from Utils import Nadam, log_likelihood_loss, jaccard_score, MultilabelDataset
-    train_dataset = MultilabelDataset(dataset_name='scene', opt='undivided_train', random_state=7)
-    test_dataset = MultilabelDataset(dataset_name='scene', opt='undivided_test', random_state=7)
-    train_loader = torch.utils.data.DataLoader(dataset=train_dataset,
-                                               batch_size=128,
-                                               shuffle=True, num_workers=0)
-    test_loader = torch.utils.data.DataLoader(dataset=test_dataset,
-                                              batch_size=test_dataset.X.shape[0],
-                                              shuffle=False, num_workers=0)
-    model = RethinkNet(train_dataset.X.shape[1], train_dataset.y.shape[1], device = device).to(device).double()
-    criterion = nn.BCELoss()
-    prediction = np.expand_dims(np.zeros(test_loader.dataset.y.shape[1]), axis=0)
-    y_true = np.expand_dims(np.zeros(test_loader.dataset.y.shape[1]), axis=0)
-
-
-    optimizer =  Nadam([{'params': model.rnn.parameters(), 'weight_decay': 1e-05}, {'params':model.dec.parameters()}])
-    for _ in range(1000):
+def train(model, criterion, optimizer, train_loader, valid_loader, num_epochs):
+    early_stopping = EarlyStopping(patience=100, verbose=True, path=dataset_name + ".pt")
+    ep= 10000
+    for epoch in range(num_epochs):
+        model.train()
+        total_loss = 0
         for X, labels in train_loader:
             optimizer.zero_grad()
             X = X.to(device).double()
@@ -124,46 +31,123 @@ if __name__ ==  "__main__":
 
             output = model(X)
             ls = criterion(output, labels)
+            total_loss += ls.item() * X.size(0)
             ls.backward()
             optimizer.step()
+        train_loss = total_loss / len(train_loader)
 
-    with torch.no_grad():
-        for X, labels in test_loader:
+        model.eval()
+        total_loss = 0
+        for X, labels in valid_loader:
             X = X.to(device).double()
+            labels = model.prep_Y(labels)
             labels = labels.to(device).double()
-            outputs = model.predict_proba(X)
-            predicted = torch.squeeze(outputs[-1])
-            frac_labels = (labels.cpu()).numpy()
-            y_true = np.concatenate((y_true, frac_labels), axis=0)
 
-            frac_prediction = (predicted.cpu()).numpy()
-            prediction = np.concatenate((prediction, frac_prediction), axis=0)
-        prediction = np.delete(prediction, 0, 0)
-        prediction_proba = prediction.copy()
+            output = model(X)
+            ls = criterion(output, labels)
+            total_loss += ls.item() * X.size(0)
+        valid_loss = total_loss / len(valid_loader)
 
+        epoch_len = len(str(num_epochs))
 
+        print_msg = (f'[{epoch:>{epoch_len}}/{num_epochs:>{epoch_len}}] ' +
+                     f'train_loss: {train_loss:.5f} ' +
+                     f'valid_loss: {valid_loss:.5f}')
 
-        y_true = np.delete(y_true, 0, 0)
-        for i in range(prediction.shape[0]):
-            is_correct = 0
-            for j in range(prediction.shape[1]):
-                if (prediction[i, j] >= 0.5):
-                    prediction[i, j] = 1
-                elif (prediction[i, j] < 0.5):
-                    prediction[i, j] = 0
+        print(print_msg)
 
-        import sklearn.metrics as metrics
-        f1_micro_score = metrics.f1_score(y_true, prediction, average='micro')
-        f1_macro_score = metrics.f1_score(y_true, prediction, average='macro')
-        accuracy = metrics.accuracy_score(y_true, prediction)
-        cll_loss = log_likelihood_loss(y_true, prediction_proba)
-        jaccard = jaccard_score(y_true, prediction)
-        hamming_score = 1 - metrics.hamming_loss(y_true, prediction)
-        print('ema = %.5f' % (accuracy))
-        print('f1_micro_score = %.5f' % (f1_micro_score))
-        print('f1_macro_score = %.5f' % (f1_macro_score))
-        print('cll_loss = %.5f' % (cll_loss))
+        early_stopping(valid_loss, model)
 
+        if early_stopping.early_stop:
+            print("Early stopping")
+            ep = epoch+1
+            break
+
+    final_model = torch.load('./'+dataset_name+'.pt')
+
+    return final_model, ep
+
+def test(model, test_loader):
+    prediction = np.expand_dims(np.zeros(test_loader.dataset.y.shape[1]), axis=0)
+    y_true = np.expand_dims(np.zeros(test_loader.dataset.y.shape[1]), axis=0)
+
+    for X, labels in test_loader:
+        X = X.to(device).double()
+        labels = labels.to(device).double()
+        outputs = model.predict_proba(X)
+        predicted = torch.squeeze(outputs[-1])
+        frac_labels = (labels.cpu()).detach().numpy()
+        y_true = np.concatenate((y_true, frac_labels), axis=0)
+
+        frac_prediction = (predicted.cpu()).detach().numpy()
+        prediction = np.concatenate((prediction, frac_prediction), axis=0)
+
+    prediction = np.delete(prediction, 0, 0)
+    prediction_proba = prediction.copy()
+    y_true = np.delete(y_true, 0, 0)
+
+    for i in range(prediction.shape[0]):
+        for j in range(prediction.shape[1]):
+            if (prediction[i, j] >= 0.5):
+                prediction[i, j] = 1
+            elif (prediction[i, j] < 0.5):
+                prediction[i, j] = 0
+
+    f1_micro_score = metrics.f1_score(y_true, prediction, average='micro')
+    f1_macro_score = metrics.f1_score(y_true, prediction, average='macro')
+    accuracy = metrics.accuracy_score(y_true, prediction)
+    cll_loss = log_likelihood_loss(y_true, prediction_proba)
+    jaccard = jaccard_score(y_true, prediction)
+    hamming_score = 1 - metrics.hamming_loss(y_true, prediction)
+
+    return prediction_proba, accuracy, jaccard, hamming_score, f1_micro_score, f1_macro_score, cll_loss
+
+if __name__ ==  "__main__":
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')  # torch.device('cpu')
+    #device = 'cpu'
+
+    max_epoch = 10000
+    batch_size = 128
+    learning_rate = [0.0005, 0.00075, 0.001, 0.0025, 0.005, 0.0075, 0.01, 0.025, 0.05, 0.075]
+    weight_decay = [0, 0.00001, 0.000025, 0.00005, 0.000075, 0.0001]
+    random_seed = [7, 14, 21, 28, 42]
+
+    '''max_epoch = 1
+    batch_size = 128
+    learning_rate = [0.001]
+    weight_decay = [0]
+    random_seed = [1011]'''
+
+    for seed in random_seed:
+        model_num = 0
+        train_dataset = MultilabelDataset(dataset_name=dataset_name, opt='undivided_train', random_state=seed)
+        valid_dataset = MultilabelDataset(dataset_name=dataset_name, opt='undivided_valid', random_state=seed)
+        test_dataset = MultilabelDataset(dataset_name=dataset_name, opt='undivided_test', random_state=seed)
+
+        train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=batch_size)
+        valid_loader = torch.utils.data.DataLoader(dataset=valid_dataset, batch_size=batch_size)
+        test_loader = torch.utils.data.DataLoader(dataset=test_dataset, batch_size=batch_size)
+
+        for lr in learning_rate :
+            for wd in weight_decay :
+                model_num += 1
+                model = RethinkNet(train_dataset.X.shape[1], train_dataset.y.shape[1], device=device).to(device).double()
+                criterion = nn.BCELoss()
+
+                optimizer =  Nadam([{'params': model.rnn.parameters(), 'lr': lr, 'weight_decay': wd}, {'params':model.dec.parameters()}])
+
+                model, epoch = train(model, criterion, optimizer, train_loader, valid_loader, max_epoch)
+                torch.save(model, "./models/model" + str(seed)+'_'+str(model_num) + ".pt")
+
+                train_pred, accuracy, jaccard, hamming_score, f1_micro_score, f1_macro_score, cll_loss = test(model, train_loader)
+                f = open('./' + dataset_name + str(seed)+'_train_Result.csv', 'a')
+                f.write('{},{},{},{},{},{},{},{},{},{}\n'.format(model_num,epoch, lr, wd,accuracy, jaccard, hamming_score, f1_micro_score, f1_macro_score, cll_loss))
+                f.close()
+
+                test_pred, accuracy, jaccard, hamming_score, f1_micro_score, f1_macro_score, cll_loss = test(model, test_loader)
+                f = open('./' + dataset_name+str(seed)+'_test_Result.csv', 'a')
+                f.write('{},{},{},{},{},{},{},{},{},{}\n'.format(model_num,epoch, lr, wd,accuracy, jaccard, hamming_score, f1_micro_score, f1_macro_score, cll_loss))
+                f.close()
 '''
     To Implement
         - Loss function (Reweighted CSMLC)
