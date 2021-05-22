@@ -11,7 +11,13 @@ import sklearn
 import sklearn.metrics as metrics
 from skmultilearn import dataset
 import sklearn.metrics as metrics
-from Utils import Nadam, log_likelihood_loss, jaccard_score, MultilabelDataset, EarlyStopping
+from Utils import Nadam, log_likelihood_loss, jaccard_score,  EarlyStopping
+
+if len(sys.argv)> 3 :
+    from Utils import ExternalDataset as Dataset
+else:
+    from Utils import MultilabelDataset as Dataset
+
 from RethinkNet import RethinkNet
 import sys
 
@@ -120,9 +126,9 @@ if __name__ ==  "__main__":
 
     for seed in random_seed:
         model_num = 0
-        train_dataset = MultilabelDataset(dataset_name=dataset_name, opt='undivided_train', random_state=seed)
-        valid_dataset = MultilabelDataset(dataset_name=dataset_name, opt='undivided_valid', random_state=seed)
-        test_dataset = MultilabelDataset(dataset_name=dataset_name, opt='undivided_test', random_state=seed)
+        train_dataset = Dataset(dataset_name=dataset_name, opt='undivided_train', random_state=seed)
+        valid_dataset = Dataset(dataset_name=dataset_name, opt='undivided_valid', random_state=seed)
+        test_dataset = Dataset(dataset_name=dataset_name, opt='undivided_test', random_state=seed)
 
         train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=batch_size)
         valid_loader = torch.utils.data.DataLoader(dataset=valid_dataset, batch_size=batch_size)
