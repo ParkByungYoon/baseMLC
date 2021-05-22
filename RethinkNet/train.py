@@ -137,7 +137,7 @@ if __name__ ==  "__main__":
                 optimizer =  Nadam([{'params': model.rnn.parameters(), 'lr': lr, 'weight_decay': wd}, {'params':model.dec.parameters()}])
 
                 model, epoch = train(model, criterion, optimizer, train_loader, valid_loader, max_epoch)
-                torch.save(model, "./models/model" + str(seed)+'_'+str(model_num) + ".pt")
+                torch.save(model, "./models/"+dataset_name+"/model" + str(seed)+'_'+str(model_num) + ".pt")
 
                 train_pred, accuracy, jaccard, hamming_score, f1_micro_score, f1_macro_score, cll_loss = test(model, train_loader)
                 f = open('./' + dataset_name + str(seed)+'_train_Result.csv', 'a')
