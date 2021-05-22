@@ -134,6 +134,14 @@ class MultilabelDataset(torch.utils.data.Dataset):
             embed = embed.to_numpy()
             self.embed = torch.from_numpy(embed)
 
+        if top is not None:
+            example_num_per_label = y.sum(axis=0)
+            top = 15
+
+            asc_arg = np.argsort(example_num_per_label)
+            des_arg = asc_arg[::-1]
+            y = y[:, des_arg[:top]]
+
         if(opt[0] == 'undivided') :
             X_tr, X_ts, y_tr, y_ts = train_test_split(X,y, test_size=test_size, random_state=random_state)
             if scaler != None:
@@ -142,23 +150,14 @@ class MultilabelDataset(torch.utils.data.Dataset):
                 X_tr = scaler.transform(X_tr)
                 X_ts = scaler.transform(X_ts)
 
-            if top is not None:
-                sum = y_tr.sum(axis=0)
-
-                top_label_index = []
-
-                for i in range(top):
-                    largest_index = np.argmax(sum)
-                    top_label_index.append(largest_index)
-                    sum = np.delete(sum, largest_index)
-
-                y_tr = y_tr[:, top_label_index]
-                y_ts = y_ts[:, top_label_index]
+            X_tr, X_val, y_tr, y_val = train_test_split(X_tr, y_tr, test_size = 0.25, random_state = random_state)
 
             if (opt[1] == 'train'):
-                X = X_tr; y = y_tr; del(X_ts); del(y_ts)
+                X = X_tr; y = y_tr; del(X_ts); del(y_ts) ; del(X_val); del(y_val)
+            elif(opt[1] == 'valid'):
+                X = X_val; y = y_val ; del(X_tr); del(X_ts); del(y_tr); del(y_ts)
             else:
-                X = X_ts; y = y_ts; del(X_tr); del(y_tr)
+                X = X_ts; y = y_ts; del(X_tr); del(y_tr); del(X_val); del(y_val)
         else :
             X_tr, y_tr, _, _ = dataset.load_dataset(dataset_name, 'train')
             X_tr = X_tr.toarray()
@@ -193,3 +192,38 @@ class MultilabelDataset(torch.utils.data.Dataset):
 
     def __len__(self):
         return self.length
+
+class EarlyStopping:
+    def __init__(self, patience = 100, verbose=False, tolerance=0.00001, path='checkpoint.pt'):
+        self.patience = patience
+        self.verbose = verbose
+        self.counter = 0
+        # If tolereance is large value, then early stopping criterion is more strict.
+        self.tolerance = tolerance
+        self.early_stop = False
+        self.val_loss_min = np.Inf
+        self.val_loss_last = np.Inf
+        self.path = path
+
+    def __call__(self, val_loss, model):
+        if self.val_loss_min is np.Inf:
+            self.save_checkpoint(val_loss, model)
+            self.val_loss_last = val_loss
+
+        elif  self.val_loss_last - val_loss < self.tolerance:
+            self.counter += 1
+            print('EarlyStopping counter: {} out of {}'.format(self.counter, self.patience))
+            if self.counter >= self.patience:
+                self.early_stop = True
+        else:
+            self.val_loss_last = val_loss
+            if(self.val_loss_min > val_loss):
+                self.save_checkpoint(val_loss, model)
+            self.counter = 0
+
+    def save_checkpoint(self, val_loss, model):
+        if self.verbose:
+            print('Least validation loss decreased (%.6f --> %.6f).  Saving model ...'%(self.val_loss_min, val_loss))
+
+        torch.save(model, self.path)
+        self.val_loss_min = val_loss
