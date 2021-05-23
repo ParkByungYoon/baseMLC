@@ -12,6 +12,7 @@ import sys
 import os
 from CCRNN import CCRNN
 from torch.nn.utils.rnn import pack_padded_sequence
+from torch.nn.utils.rnn import pad_sequence
 sys.path.append(os.path.dirname(os.path.abspath(os.path.dirname(__file__))))
 import metrics
 
@@ -25,10 +26,21 @@ def y2id(y):
         lens.append(len(id))
     return ids, max(lens), lens
 
+def id2y(ids, num):
+    y = np.zeros((len(ids),num))
+    for i in range(len(ids)):
+        y[i, ids[i]] = 1
+    return y
+
 class CCRNNDataset(torch.utils.data.Dataset):
     def __init__(self, dataset_name, opt = 'train', top = None, scaler = MinMaxScaler, random_state = 42, test_size = 0.25 ):
         X, y, _, _ = dataset.load_dataset(dataset_name, 'undivided')
         X, y = X.toarray(), y.toarray()
+
+        instances_per_label = y.sum(axis=0)
+        asc_arg = np.argsort(instances_per_label)
+        des_arg = asc_arg[::-1]
+        y = y[:, des_arg]
 
         if top is not None:
             example_num_per_label = y.sum(axis=0)
@@ -58,20 +70,18 @@ class CCRNNDataset(torch.utils.data.Dataset):
 
         self.X = torch.from_numpy(X)
         self.y = y
-        self.start = y.shape[1]+2
-        self.end = y.shape[1]+1
-        self.pad = y.shape[1]
-        self.ids, self.time_step, self.lens = y2id(y)
+        self.end = y.shape[1]
+        self.pad = y.shape[1]+1
+        self.ids, mlen, self.lens = y2id(y)
+        self.max_len = mlen+1
         self.length = X.shape[0]
 
     def __getitem__(self, idx):
-        length = len(self.ids[idx])
-        self.ids[idx] = np.insert(self.ids[idx], 0, self.start)
         self.ids[idx] = np.append(self.ids[idx], self.end)
-        if(length < self.time_step) :
-            for i in range(self.time_step - length) :
-                self.ids[idx] = np.append(self.ids[idx], self.pad)
-        return self.X[idx], torch.Tensor(self.ids[idx]), length+2
+        for i in range(self.max_len - len(self.ids[idx])) :
+            self.ids[idx] = np.append(self.ids[idx], self.pad)
+
+        return self.X[idx], self.ids[idx], self.lens[idx]+1
 
     def __len__(self):
         return self.length
@@ -88,29 +98,28 @@ test_loader = torch.utils.data.DataLoader(dataset=test_dataset,
                                               batch_size=128,
                                               shuffle=False, num_workers=0)
 
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 input_size = test_dataset.X.shape[1]
 embed_size = 512
 hidden_size = 1024
-vocab_size = 9
+vocab_size = test_dataset.y.shape[1]+1
 
 model = CCRNN(input_size, embed_size, hidden_size, vocab_size).to(device)
 criterion = nn.CrossEntropyLoss()
 optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
 
-for epoch in range(1):
-    for i, (X, label, lengths) in enumerate(train_loader):
+
+for epoch in range(1000):
+    for i, (X, labels, lengths) in enumerate(train_loader):
         # Set mini-batch dataset
         X = X.to(device).float()
-        label = label.to(device).long()
-        targets = pack_padded_sequence(label, lengths, batch_first=True, enforce_sorted=False)[0]
-
+        labels = labels.to(device).long()
+        targets = pack_padded_sequence(labels, lengths, batch_first=True, enforce_sorted=False)[0]
         # Forward, backward and optimize
-        outputs = model(X, label)
+        outputs = model(X, labels)
         outputs = pack_padded_sequence(outputs, lengths, batch_first=True, enforce_sorted=False)[0]
         loss = criterion(outputs, targets)
-        print(loss.item())
 
         model.zero_grad()
         loss.backward()
@@ -118,34 +127,32 @@ for epoch in range(1):
 
     if(epoch%10 == 0) : print('EPOCH:'+str(epoch))
 
-ids = None
-y_true = None
+y_true = prediction = None
 
-for i, (X, targets, lengths) in enumerate(test_loader):
-    start = torch.empty(X.size(0), 1).fill_(vocab_size-1).to(device).long()
+for i, (X, labels, lengths) in enumerate(test_loader):
     X = X.to(device).float()
-    targets = targets.to(device).long()
-    predicts = model.sample(X, start)
+    targets = labels.to(device).long()
 
-    if y_true == None :
-        y_true, ids = targets, predicts
-    else :
+    predicts = model.sample(X)
+
+    if y_true == None:
+        y_true, prediction = targets, predicts
+    else:
         y_true = torch.cat((y_true, targets), axis=0)
-        ids = torch.cat((ids, predicts), axis=0)
+        prediction = torch.cat((prediction, predicts), axis=0)
 
 y_true = (y_true.cpu()).detach().numpy()
-ids = (ids.cpu()).detach().numpy()
+prediction = (prediction.cpu()).detach().numpy().astype(np.int64)
 
-prediction = np.zeros((len(test_dataset), int(test_dataset.pad)))
-
-for i in range(ids.shape[0]) :
-    predicted_ids = ids[i, 1:1+test_dataset.lens[i]].astype(np.int64)
-    for j in predicted_ids :
-        if(j >= int(test_dataset.pad)) : continue
-        prediction[i, j] = 1
-
-df = pd.DataFrame(prediction)
-df.to_csv('./prediction.csv', index=False)
-
-ema = metric.accuracy_score(test_dataset.y, prediction)
+ids = []
+for i in range(prediction.shape[0]) :
+    end_point = np.argwhere(prediction[i]==vocab_size-1).astype(np.int64)
+    if(len(end_point) == 0) :
+        ids.append(prediction[i]);
+    else :
+        end_point = end_point.squeeze(axis=1)
+        ids.append(prediction[i,:end_point[0]])
+    ids[i] = np.unique(ids[i])
+test_pred = id2y(ids, test_dataset.y.shape[1])
+ema = metric.accuracy_score(test_dataset.y, test_pred)
 print(ema)
