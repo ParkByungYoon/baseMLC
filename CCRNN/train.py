@@ -18,8 +18,9 @@ import metrics
 dataset_name = sys.argv[1]
 
 def train(model, criterion, optimizer, train_loader, valid_loader, num_epochs):
-    early_stopping = EarlyStopping(patience=20, verbose=True, path=dataset_name + ".pt")
+    early_stopping = EarlyStopping(patience=100, verbose=True, path=dataset_name + ".pt")
 
+    ep=num_epochs
     for epoch in range(num_epochs):
         model.train()
         total_loss = 0
@@ -68,7 +69,8 @@ def train(model, criterion, optimizer, train_loader, valid_loader, num_epochs):
             ep = epoch + 1
             break
 
-    final_model = torch.load('./' + dataset_name + '.pt')
+    final_model = model
+    #final_model = torch.load('./' + dataset_name + '.pt')
 
     return final_model, ep
 
@@ -79,7 +81,7 @@ def test(model, test_loader):
         X = X.to(device).float()
         targets = labels.to(device).long()
 
-        predicts = model.sample(X)
+        predicts = model.predict(X)
 
         if y_true == None:
             y_true, prediction = targets, predicts
@@ -117,29 +119,29 @@ embed_size = 512
 hidden_size = 1024
 batch_size = 128
 
-max_epoch = 1000
+max_epoch = 100
 learning_rate = [0.0005, 0.00075, 0.001, 0.0025, 0.005, 0.0075, 0.01, 0.025, 0.05, 0.075]
 weight_decay = [0, 0.00001, 0.000025, 0.00005, 0.000075, 0.0001]
 random_seed = [7]
 
-"""max_epoch = 1000
-learning_rate = [0.0001]
+"""max_epoch = 100
+learning_rate = [0.001]
 weight_decay = [0.0001]
 random_seed = [7]"""
 
 for seed in random_seed:
     model_num = 0
-    train_dataset = CCRNNDataset(dataset_name=dataset_name, opt='train', random_state=7)
+    train_dataset = CCRNNDataset(dataset_name=dataset_name, opt='train', random_state=seed)
     train_loader = torch.utils.data.DataLoader(dataset=train_dataset,
                                                batch_size=batch_size,
                                                shuffle=False)
 
-    valid_dataset = CCRNNDataset(dataset_name=dataset_name, opt='valid', random_state=7)
+    valid_dataset = CCRNNDataset(dataset_name=dataset_name, opt='valid', random_state=seed)
     valid_loader = torch.utils.data.DataLoader(dataset=valid_dataset,
                                                batch_size=batch_size,
                                                shuffle=False)
 
-    test_dataset = CCRNNDataset(dataset_name=dataset_name, opt='test', random_state=7)
+    test_dataset = CCRNNDataset(dataset_name=dataset_name, opt='test', random_state=seed)
     test_loader = torch.utils.data.DataLoader(dataset=test_dataset,
                                                   batch_size=128,
                                                   shuffle=False)
@@ -151,7 +153,7 @@ for seed in random_seed:
             model_num+=1
             model = CCRNN(input_size, embed_size, hidden_size, vocab_size).to(device)
             criterion = nn.CrossEntropyLoss()
-            optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+            optimizer = torch.optim.Adam(model.parameters(), weight_decay=wd, lr=lr)
 
             model, epoch = train(model, criterion, optimizer, train_loader, valid_loader, max_epoch)
             torch.save(model, "./models/" + dataset_name + "/model" + str(seed) + '_' + str(model_num) + ".pt")

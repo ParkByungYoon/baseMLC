@@ -44,7 +44,7 @@ class CCRNN(nn.Module):
             predicts[:, i, :] = output
         return predicts
 
-    def sample(self, X):
+    def predict(self, X):
         predict_ids = to_var(torch.zeros(X.size(0), self.max_seg_length))
         start = to_var(torch.zeros((X.size(0), self.embed_size)))
         features = self.fembed(X)
@@ -63,3 +63,25 @@ class CCRNN(nn.Module):
             inputs = torch.cat((features, embeddings), -1)
 
         return predict_ids
+
+    def predict_proba(self, X):
+        predict_ids = to_var(torch.zeros(X.size(0), self.max_seg_length))
+        prediction = to_var(torch.zeros(X.size(0), self.max_seg_length))
+        start = to_var(torch.zeros((X.size(0), self.embed_size)))
+        features = self.fembed(X)
+
+        inputs = torch.cat((features, start), -1)
+
+        hx = to_var(torch.zeros(X.size(0), self.hidden_size))
+        cx = to_var(torch.zeros(X.size(0), self.hidden_size))
+
+        for i in range(self.max_seg_length):
+            hx, cx = self.lstm_cell(inputs, (hx, cx))  # hiddens: (batch_size, 1, hidden_size)
+            outputs = self.linear(hx)  # outputs:  (batch_size, vocab_size)
+            predicted, predicted_id = outputs.max(1)  # predicted: (batch_size)
+            predict_ids[:, i] = predicted_id
+            prediction[:, i] = predicted
+            embeddings = self.lembed(predicted_id)  # inputs: (batch_size, embed_size)
+            inputs = torch.cat((features, embeddings), -1)
+
+        return predict_ids, prediction
