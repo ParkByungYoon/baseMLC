@@ -22,6 +22,7 @@ class CCRNN(nn.Module):
         self.embed_size = embed_size
         self.vocab_size = vocab_size
         self.hidden_size = hidden_size
+        self.softmax = nn.Softmax(dim=1)
 
     def forward(self, X, labels):
         batch_size, time_step = labels.size()
@@ -78,6 +79,7 @@ class CCRNN(nn.Module):
         for i in range(self.max_seg_length):
             hx, cx = self.lstm_cell(inputs, (hx, cx))  # hiddens: (batch_size, 1, hidden_size)
             outputs = self.linear(hx)  # outputs:  (batch_size, vocab_size)
+            outputs = self.softmax(outputs)
             predicted, predicted_id = outputs.max(1)  # predicted: (batch_size)
             predict_ids[:, i] = predicted_id
             prediction[:, i] = predicted
