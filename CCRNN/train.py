@@ -5,147 +5,176 @@ import numpy as np
 import pandas as pd
 import sklearn
 import sklearn.metrics as metric
-from skmultilearn import dataset
-from sklearn.preprocessing import MinMaxScaler
-from sklearn.model_selection import train_test_split
 import sys
 import os
+from Utils import CCRNNDataset, id2y, EarlyStopping
 from CCRNN import CCRNN
 from torch.nn.utils.rnn import pack_padded_sequence
+from torch.nn.utils.rnn import pad_sequence
 sys.path.append(os.path.dirname(os.path.abspath(os.path.dirname(__file__))))
 import metrics
 
-def y2id(y):
-    ids = []
-    lens = []
-    for i in range(y.shape[0]):
-        id = np.argwhere(y[i] == 1)
-        id = np.ravel(id, order='F')
-        ids.append(id)
-        lens.append(len(id))
-    return ids, max(lens), lens
 
-class CCRNNDataset(torch.utils.data.Dataset):
-    def __init__(self, dataset_name, opt = 'train', top = None, scaler = MinMaxScaler, random_state = 42, test_size = 0.25 ):
-        X, y, _, _ = dataset.load_dataset(dataset_name, 'undivided')
-        X, y = X.toarray(), y.toarray()
+dataset_name = sys.argv[1]
 
-        if top is not None:
-            example_num_per_label = y.sum(axis=0)
-            top = 15
+def train(model, criterion, optimizer, train_loader, valid_loader, num_epochs):
+    early_stopping = EarlyStopping(patience=20, verbose=True, path=dataset_name + ".pt")
 
-            asc_arg = np.argsort(example_num_per_label)
-            des_arg = asc_arg[::-1]
-            y = y[:, des_arg[:top]]
+    for epoch in range(num_epochs):
+        model.train()
+        total_loss = 0
+        for i, (X, labels, lengths) in enumerate(train_loader):
+            # Set mini-batch dataset
+            X = X.to(device).float()
+            labels = labels.to(device).long()
+            targets = pack_padded_sequence(labels, lengths, batch_first=True, enforce_sorted=False)[0]
+            # Forward, backward and optimize
+            outputs = model(X, labels)
+            outputs = pack_padded_sequence(outputs, lengths, batch_first=True, enforce_sorted=False)[0]
+            loss = criterion(outputs, targets)
 
-        X_tr, X_ts, y_tr, y_ts = train_test_split(X, y, test_size=test_size, random_state=random_state)
-        if scaler != None:
-            scaler = scaler()
-            scaler.fit(X_tr)
-            X_tr = scaler.transform(X_tr)
-            X_ts = scaler.transform(X_ts)
+            total_loss += loss.item() * X.size(0)
+            model.zero_grad()
+            loss.backward()
+            optimizer.step()
+        train_loss = total_loss / len(train_loader)
 
-        X_tr, X_val, y_tr, y_val = train_test_split(X_tr, y_tr, test_size=0.25, random_state=random_state)
-        if (opt == 'train'):
-            X = X_tr;y = y_tr;
-            del (X_ts);del (y_ts);del (X_val);del (y_val)
-        elif (opt == 'valid'):
-            X = X_val; y = y_val;
-            del (X_tr);del (X_ts);del (y_tr);del (y_ts)
+        total_loss = 0
+        for i, (X, labels, lengths) in enumerate(valid_loader):
+            X = X.to(device).float()
+            labels = labels.to(device).long()
+            targets = pack_padded_sequence(labels, lengths, batch_first=True, enforce_sorted=False)[0]
+            # Forward, backward and optimize
+            outputs = model(X, labels)
+            outputs = pack_padded_sequence(outputs, lengths, batch_first=True, enforce_sorted=False)[0]
+
+            loss = criterion(outputs, targets)
+            total_loss += loss.item() * X.size(0)
+        valid_loss = total_loss / len(valid_loader)
+
+
+        epoch_len = len(str(num_epochs))
+
+        print_msg = (f'[{epoch:>{epoch_len}}/{num_epochs:>{epoch_len}}] ' +
+                         f'train_loss: {train_loss:.5f} ' +
+                         f'valid_loss: {valid_loss:.5f}')
+
+        print(print_msg)
+
+        early_stopping(valid_loss, model)
+
+        if early_stopping.early_stop:
+            print("Early stopping")
+            ep = epoch + 1
+            break
+
+    final_model = torch.load('./' + dataset_name + '.pt')
+
+    return final_model, ep
+
+def test(model, test_loader):
+    y_true = prediction = None
+
+    for i, (X, labels, lengths) in enumerate(test_loader):
+        X = X.to(device).float()
+        targets = labels.to(device).long()
+
+        predicts = model.sample(X)
+
+        if y_true == None:
+            y_true, prediction = targets, predicts
         else:
-            X = X_ts; y = y_ts;
-            del (X_tr);del (y_tr);del (X_val);del (y_val)
+            y_true = torch.cat((y_true, targets), axis=0)
+            prediction = torch.cat((prediction, predicts), axis=0)
 
-        self.X = torch.from_numpy(X)
-        self.y = y
-        self.start = y.shape[1]+2
-        self.end = y.shape[1]+1
-        self.pad = y.shape[1]
-        self.ids, self.time_step, self.lens = y2id(y)
-        self.length = X.shape[0]
+    y_true = (y_true.cpu()).detach().numpy()
+    prediction = (prediction.cpu()).detach().numpy().astype(np.int64)
 
-    def __getitem__(self, idx):
-        length = len(self.ids[idx])
-        self.ids[idx] = np.insert(self.ids[idx], 0, self.start)
-        self.ids[idx] = np.append(self.ids[idx], self.end)
-        if(length < self.time_step) :
-            for i in range(self.time_step - length) :
-                self.ids[idx] = np.append(self.ids[idx], self.pad)
-        return self.X[idx], torch.Tensor(self.ids[idx]), length+2
+    ids = []
+    for i in range(prediction.shape[0]):
+        end_point = np.argwhere(prediction[i] == vocab_size - 1).astype(np.int64)
+        if (len(end_point) == 0):
+            ids.append(prediction[i]);
+        else:
+            end_point = end_point.squeeze(axis=1)
+            ids.append(prediction[i, :end_point[0]])
+        ids[i] = np.unique(ids[i])
 
-    def __len__(self):
-        return self.length
+    prediction = id2y(ids, test_loader.dataset.y.shape[1])
+    y_ts = test_loader.dataset.y
 
-train_dataset = CCRNNDataset(dataset_name='scene', opt='train', random_state=7)
+    accuracy = metric.accuracy_score(y_ts, prediction)
+    jaccard = metrics.jaccard_score(y_ts, prediction)
+    #cll_loss = metrics.log_likelihood_loss(y_ts, prediction_proba)
+    hamming_score = 1 - metric.hamming_loss(y_ts, prediction)
+    f1_micro_score = metric.f1_score(y_ts, prediction, average='micro')
+    f1_macro_score = metric.f1_score(y_ts, prediction, average='macro')
 
-train_loader = torch.utils.data.DataLoader(dataset=train_dataset,
-                                              batch_size=128,
-                                              shuffle=False, num_workers=0)
-
-test_dataset = CCRNNDataset(dataset_name='scene', opt='test', random_state=7)
-
-test_loader = torch.utils.data.DataLoader(dataset=test_dataset,
-                                              batch_size=128,
-                                              shuffle=False, num_workers=0)
+    return prediction, accuracy, jaccard, hamming_score, f1_micro_score, f1_macro_score
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
-input_size = test_dataset.X.shape[1]
 embed_size = 512
 hidden_size = 1024
-vocab_size = 9
+batch_size = 128
 
-model = CCRNN(input_size, embed_size, hidden_size, vocab_size).to(device)
-criterion = nn.CrossEntropyLoss()
-optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+max_epoch = 1000
+learning_rate = [0.0005, 0.00075, 0.001, 0.0025, 0.005, 0.0075, 0.01, 0.025, 0.05, 0.075]
+weight_decay = [0, 0.00001, 0.000025, 0.00005, 0.000075, 0.0001]
+random_seed = [7]
 
-for epoch in range(100):
-    for i, (X, label, lengths) in enumerate(train_loader):
-        # Set mini-batch dataset
-        X = X.to(device).float()
-        label = label.to(device).long()
-        targets = pack_padded_sequence(label, lengths, batch_first=True, enforce_sorted=False)[0]
+"""max_epoch = 1000
+learning_rate = [0.0001]
+weight_decay = [0.0001]
+random_seed = [7]"""
 
-        # Forward, backward and optimize
-        outputs = model(X, label)
-        outputs = pack_padded_sequence(outputs, lengths, batch_first=True, enforce_sorted=False)[0]
-        loss = criterion(outputs, targets)
-        print(loss.item())
+for seed in random_seed:
+    model_num = 0
+    train_dataset = CCRNNDataset(dataset_name=dataset_name, opt='train', random_state=7)
+    train_loader = torch.utils.data.DataLoader(dataset=train_dataset,
+                                               batch_size=batch_size,
+                                               shuffle=False)
 
-        model.zero_grad()
-        loss.backward()
-        optimizer.step()
+    valid_dataset = CCRNNDataset(dataset_name=dataset_name, opt='valid', random_state=7)
+    valid_loader = torch.utils.data.DataLoader(dataset=valid_dataset,
+                                               batch_size=batch_size,
+                                               shuffle=False)
 
-    if(epoch%10 == 0) : print('EPOCH:'+str(epoch))
+    test_dataset = CCRNNDataset(dataset_name=dataset_name, opt='test', random_state=7)
+    test_loader = torch.utils.data.DataLoader(dataset=test_dataset,
+                                                  batch_size=128,
+                                                  shuffle=False)
+    input_size = test_dataset.X.shape[1]
+    vocab_size = test_dataset.y.shape[1] + 1
 
-ids = None
-y_true = None
+    for lr in learning_rate:
+        for wd in weight_decay:
+            model_num+=1
+            model = CCRNN(input_size, embed_size, hidden_size, vocab_size).to(device)
+            criterion = nn.CrossEntropyLoss()
+            optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
-for i, (X, targets, lengths) in enumerate(test_loader):
-    start = torch.empty(X.size(0), 1).fill_(vocab_size-1).to(device).long()
-    X = X.to(device).float()
-    targets = targets.to(device).long()
-    predicts = model.sample(X, start)
+            model, epoch = train(model, criterion, optimizer, train_loader, valid_loader, max_epoch)
+            torch.save(model, "./models/" + dataset_name + "/model" + str(seed) + '_' + str(model_num) + ".pt")
 
-    if y_true == None :
-        y_true, ids = targets, predicts
-    else :
-        y_true = torch.cat((y_true, targets), axis=0)
-        ids = torch.cat((ids, predicts), axis=0)
+            train_pred, accuracy, jaccard, hamming_score, f1_micro_score, f1_macro_score= test(model,train_loader)
+            f = open('./' + dataset_name + str(seed) + '_train_Result.csv', 'a')
+            f.write('{},{},{},{},{},{},{},{},{}\n'.format(model_num, epoch, lr, wd, accuracy, jaccard, hamming_score,
+                                                             f1_micro_score, f1_macro_score))
+            f.close()
 
-y_true = (y_true.cpu()).detach().numpy()
-ids = (ids.cpu()).detach().numpy()
+            df = pd.DataFrame(train_pred)
+            df.to_csv('./prediction/'+dataset_name+str(seed)+'_' + str(model_num)+'_train.csv', index=False)
 
-prediction = np.zeros((len(test_dataset), int(test_dataset.pad)))
+            _, accuracy, jaccard, hamming_score, f1_micro_score, f1_macro_score = test(model, valid_loader)
+            f = open('./' + dataset_name + str(seed) + '_valid_Result.csv', 'a')
+            f.write('{},{},{},{},{},{},{},{},{}\n'.format(model_num, epoch, lr, wd, accuracy, jaccard, hamming_score,
+                                                             f1_micro_score, f1_macro_score))
 
-for i in range(ids.shape[0]) :
-    predicted_ids = ids[i, 1:1+test_dataset.lens[i]].astype(np.int64)
-    for j in predicted_ids :
-        if(j >= int(test_dataset.pad)) : continue
-        prediction[i, j] = 1
+            test_pred, accuracy, jaccard, hamming_score, f1_micro_score, f1_macro_score = test(model,test_loader)
+            f = open('./' + dataset_name + str(seed) + '_test_Result.csv', 'a')
+            f.write('{},{},{},{},{},{},{},{},{}\n'.format(model_num, epoch, lr, wd, accuracy, jaccard, hamming_score,
+                                                             f1_micro_score, f1_macro_score))
+            f.close()
 
-df = pd.DataFrame(prediction)
-df.to_csv('./prediction.csv', index=False)
-
-ema = metric.accuracy_score(test_dataset.y, prediction)
-print(ema)
+            df = pd.DataFrame(test_pred)
+            df.to_csv('./prediction/' + dataset_name + str(seed) + '_' + str(model_num) + '_test.csv', index=False)
