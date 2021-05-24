@@ -43,6 +43,9 @@ class CCRNN(nn.Module):
             hx, cx = self.lstm_cell(input, (hx, cx))
             output = self.linear(hx)
             predicts[:, i, :] = output
+
+        del hx, cx
+
         return predicts
 
     def predict(self, X):
@@ -62,6 +65,8 @@ class CCRNN(nn.Module):
             predict_ids[:, i] = predicted
             embeddings = self.lembed(predicted)  # inputs: (batch_size, embed_size)
             inputs = torch.cat((features, embeddings), -1)
+
+        del start, hx, cx
 
         return predict_ids
 
@@ -85,5 +90,7 @@ class CCRNN(nn.Module):
             prediction[:, i] = predicted
             embeddings = self.lembed(predicted_id)  # inputs: (batch_size, embed_size)
             inputs = torch.cat((features, embeddings), -1)
+
+        del start, hx, cx
 
         return predict_ids, prediction
