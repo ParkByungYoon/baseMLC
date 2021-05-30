@@ -7,15 +7,20 @@ import sklearn
 import sklearn.metrics as metric
 import sys
 import os
-from Utils import CCRNNDataset, id2y, EarlyStopping
+from Utils import id2y, EarlyStopping
+if(len(sys.argv) <= 3) :
+    from Utils import CCRNNDataset as CCRNNDataset
+    dataset_name = sys.argv[1]
+    model_num = int(sys.argv[2])
+else :
+    from Utils import ExtCCRNNDataset as CCRNNDataset
+    dataset_name = sys.argv[2]
+    model_num = int(sys.argv[3])
 from CCRNN import CCRNN
 from torch.nn.utils.rnn import pack_padded_sequence
 from torch.nn.utils.rnn import pad_sequence
 sys.path.append(os.path.dirname(os.path.abspath(os.path.dirname(__file__))))
 import metrics
-
-
-dataset_name = sys.argv[1]
 
 def train(model, criterion, optimizer, train_loader, valid_loader, num_epochs):
     early_stopping = EarlyStopping(patience=20, verbose=True, path=dataset_name + ".pt")
@@ -131,11 +136,10 @@ batch_size = 128
 max_epoch = 1000
 learning_rate = [0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05]
 weight_decay = [0]
-random_seed = [7, 14, 21, 28, 42]
+random_seed = [7,14,21,28,42]
 criterion = nn.CrossEntropyLoss()
 
 for seed in random_seed:
-    model_num = int(sys.argv[2])
     train_dataset = CCRNNDataset(dataset_name=dataset_name, opt='train', random_state=seed)
     train_loader = torch.utils.data.DataLoader(dataset=train_dataset,
                                                batch_size=batch_size,
