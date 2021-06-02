@@ -3,14 +3,14 @@ import torch.nn as nn
 import copy
 import numpy as np
 import pandas as pd
+import sys
+import os
 import sklearn
 import sklearn.metrics as metric
 from skmultilearn import dataset
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.model_selection import train_test_split
-import sys
-import os
-import Utils
+from Utils import EarlyStopping
 sys.path.append(os.path.dirname(os.path.abspath(os.path.dirname(__file__))))
 import metrics
 
@@ -46,8 +46,8 @@ class LoadDataset(torch.utils.data.Dataset):
         return self.length
 
 def train(model, criterion, optimizer, train_loader, valid_loader, num_epochs):
-    early_stopping = Utils.EarlyStopping(patience=100, verbose=True, path=dataset_name + ".pt")
-
+    early_stopping = EarlyStopping(patience=20, verbose=True, path=dataset_name + ".pt")
+    ep = 10000
     for epoch in range(1, num_epochs + 1):
         ######################
         #   train the model  #
@@ -56,8 +56,7 @@ def train(model, criterion, optimizer, train_loader, valid_loader, num_epochs):
         total_loss = 0
         for idx, (X, label) in enumerate(train_loader):
             X = X.to(device).float()
-            label = label.to(device).float().unsqueeze(1)
-
+            label = label.to(device).float()
             output = model(X)
 
             loss = criterion(output, label)
@@ -76,7 +75,7 @@ def train(model, criterion, optimizer, train_loader, valid_loader, num_epochs):
         total_loss = 0
         for idx, (X, label) in enumerate(valid_loader):
             X = X.to(device).float()
-            label = label.to(device).float().unsqueeze(1)
+            label = label.to(device).float()
             output = model(X)
 
             loss = criterion(output, label)
@@ -95,70 +94,76 @@ def train(model, criterion, optimizer, train_loader, valid_loader, num_epochs):
 
         if early_stopping.early_stop:
             print("Early stopping")
+            ep = epoch+1
             break
 
-    final_model = torch.load("./" + dataset_name + ".pt")
+    final_model = torch.load("./" + dataset_name + "1.pt")
 
-    return final_model
+    return  final_model, ep
 
-def test(model, test_loader, proba = False):
-    model.eval()
-    y_true = np.array([])
-    prediction = np.array([])
-    loss = nn.BCELoss()
-    cll_loss = 0
+def test(model, test_loader):
+    prediction = np.expand_dims(np.zeros(test_loader.dataset.y.shape[1]), axis=0)
+    y_true = np.expand_dims(np.zeros(test_loader.dataset.y.shape[1]), axis=0)
 
-    for idx, (X, label) in enumerate(test_loader):
+    for X, labels in test_loader:
         X = X.to(device).float()
-        label = label.to(device).float().unsqueeze(1)
-        output = model(X)
+        labels = labels.to(device).float()
+        predicted = model(X)
 
-        cll_loss += loss(output, label) * X.size(0)
+        frac_labels = (labels.cpu()).detach().numpy()
+        y_true = np.concatenate((y_true, frac_labels), axis=0)
 
-        label = (label.cpu()).detach().numpy()
-        y_true = np.concatenate((y_true, label), axis=None)
+        frac_prediction = (predicted.cpu()).detach().numpy()
+        prediction = np.concatenate((prediction, frac_prediction), axis=0)
 
-        output = (output.cpu()).detach().numpy()
-        prediction = np.concatenate((prediction, output), axis=None)
+    prediction = np.delete(prediction, 0, 0)
+    prediction_proba = prediction.copy()
+    y_true = np.delete(y_true, 0, 0)
 
-    cll_loss = cll_loss / len(test_loader)
+    for i in range(prediction.shape[0]):
+        for j in range(prediction.shape[1]):
+            if (prediction[i, j] >= 0.5):
+                prediction[i, j] = 1
+            elif (prediction[i, j] < 0.5):
+                prediction[i, j] = 0
 
-    if proba == False :
-        for i in range(len(prediction)):
-            if (prediction[i] >= 0.5 and prediction[i] < 1):
-                prediction[i] = 1
-            elif (prediction[i] < 0.5 and prediction[i] >= 0):
-                prediction[i] = 0
+    f1_micro_score = metric.f1_score(y_true, prediction, average='micro')
+    f1_macro_score = metric.f1_score(y_true, prediction, average='macro')
+    accuracy = metric.accuracy_score(y_true, prediction)
+    cll_loss = metrics.log_likelihood_loss(y_true, prediction_proba)
+    jaccard = metrics.jaccard_score(y_true, prediction)
+    hamming_score = 1 - metric.hamming_loss(y_true, prediction)
 
-    return prediction, cll_loss
+    return prediction_proba, accuracy, jaccard, hamming_score, f1_micro_score, f1_macro_score, cll_loss
 
-def combine_result(best_model, data_loader, prediction):
-    pred, _ = test(best_model, data_loader, proba=True)
-    pred = np.expand_dims(pred, axis=1)
-    if prediction is not None:
-        prediction = np.concatenate([prediction, pred], axis=1)
-    else:
-        prediction = copy.deepcopy(pred)
-
-    return prediction
-
-max_epoch = 1
-batch_size = 128
-learning_rate = [0.001]
-weight_decay = [0]
-random_seed = [1011]
-
-'''max_epoch = 10000
+max_epoch = 10000
 batch_size = 128
 learning_rate = [0.0005, 0.00075, 0.001, 0.0025, 0.005, 0.0075, 0.01, 0.025, 0.05, 0.075]
 weight_decay = [0, 0.00001, 0.000025, 0.00005, 0.000075, 0.0001]
-random_seed = [7, 14, 21, 28, 42]'''
+random_seed = [7, 14, 21, 28, 42]
 
-X, y, _, _ = dataset.load_dataset(dataset_name, 'undivided')
+if dataset_name == 'yahoo' :
+    dataset_name = sys.argv[2]
+    path_to_arff_file = '../yahoo/'+dataset_name+'1.arff'
+    if dataset_name == 'Arts':  label_count = 26
+    elif dataset_name == 'Business':    label_count = 30
+    elif dataset_name == 'Science': label_count = 40
+    else:   label_count = -1
+    label_location = 'end'
+    arff_file_is_sparse = False
+
+    X, y = dataset.load_from_arff(
+        path_to_arff_file,
+        label_count=label_count,
+        label_location=label_location,
+        load_sparse=arff_file_is_sparse
+    )
+else :  X, y, _, _ = dataset.load_dataset(dataset_name, 'undivided')
+
 X = X.toarray()
 y = y.toarray()
 
-if y.shape[1] > 15:
+if y.shape[1] > 15 and dataset_name != 'tmc2007_500':
     print("Label Number Changed %d -->" % (y.shape[1]), end=' ')
 
     example_num_per_label = y.sum(axis=0)
@@ -169,6 +174,7 @@ if y.shape[1] > 15:
     y = y[:, des_arg[:top]]
     print(y.shape[1])
 
+model_num = 0
 for seed in random_seed :
     X_tr, X_ts, y_tr, y_ts = train_test_split(X, y, test_size=0.25, random_state=seed)
 
@@ -180,94 +186,32 @@ for seed in random_seed :
 
     input_size = X_tr.shape[1]
     output_size = num_classes = y_tr.shape[1]
+    train_dataset = LoadDataset(X_tr, y_tr)
+    valid_dataset = LoadDataset(X_val, y_val)
+    test_dataset = LoadDataset(X_ts, y_ts)
 
-    best_model_params = [{} for i in range(num_classes)]
+    train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=batch_size)
+    valid_loader = torch.utils.data.DataLoader(dataset=valid_dataset, batch_size=batch_size)
+    test_loader = torch.utils.data.DataLoader(dataset=test_dataset, batch_size=batch_size)
 
-    train_pred = valid_pred = test_pred = None
+    for lr in learning_rate:
+        for wd in weight_decay:
+            model_num += 1
+            model = LR(input_size, output_size).to(device)
+            optimizer = torch.optim.Adam(model.parameters(), weight_decay=wd, lr=lr)
+            criterion = nn.BCELoss()
 
-    for i in range(num_classes):
-        minim = 999999
-        train_dataset = LoadDataset(X_tr, y_tr[:, i])
-        train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=batch_size)
+            model, epoch = train(model, criterion, optimizer, train_loader, valid_loader, max_epoch)
+            torch.save(model, "./models/" + dataset_name + "/model" + str(seed) + '_' + str(model_num) + ".pt")
 
-        valid_dataset = LoadDataset(X_val, y_val[:, i])
-        valid_loader = torch.utils.data.DataLoader(dataset=valid_dataset, batch_size=batch_size)
+            train_pred, accuracy, jaccard, hamming_score, f1_micro_score, f1_macro_score, cll_loss = test(model, train_loader)
+            f = open('./' + dataset_name + str(seed) + '_train_Result.csv', 'a')
+            f.write('{},{},{},{},{},{},{},{},{},{}\n'.format(model_num, epoch, lr, wd, accuracy, jaccard, hamming_score,
+                                                             f1_micro_score, f1_macro_score, cll_loss))
+            f.close()
 
-        test_dataset = LoadDataset(X_ts, y_ts[:, i])
-        test_loader = torch.utils.data.DataLoader(dataset=test_dataset, batch_size=batch_size)
-
-        for lr in learning_rate:
-            for wd in weight_decay:
-                model = LR(X_tr.shape[1], 1).to(device)
-                torch.nn.init.xavier_uniform_(model.LR[0].weight)
-                criterion = nn.BCELoss()
-                optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=wd)
-
-                model = train(model, criterion, optimizer, train_loader, valid_loader, max_epoch)
-                _, cll_loss = test(model, test_loader)
-
-                if cll_loss < minim:
-                    best_model_params[i]['lr'] = lr
-                    best_model_params[i]['wd'] = wd
-                    best_model = copy.deepcopy(model)
-                    minim = cll_loss
-                del (model)
-
-        torch.save(best_model, "./models/model" + str(i) + ".pt")
-
-        train_pred = combine_result(best_model, train_loader, train_pred)
-        valid_pred = combine_result(best_model, valid_loader, valid_pred)
-        test_pred = combine_result(best_model, test_loader, test_pred)
-
-    df = pd.DataFrame(test_pred)
-    df.to_csv('./'+dataset_name+str(seed)+'.csv', index=False)
-
-    prediction = copy.deepcopy(train_pred)
-    for i in range(prediction.shape[0]):
-        is_correct = 0
-        for j in range(prediction.shape[1]):
-            if (prediction[i, j] >= 0.5 and prediction[i, j] < 1):
-                prediction[i, j] = 1
-            elif (prediction[i, j] < 0.5 and prediction[i, j] >= 0):
-                prediction[i, j] = 0
-
-    ema = metric.accuracy_score(y_tr, prediction)
-    jaccard_score = metrics.jaccard_score(y_tr, prediction)
-    cll_loss = metrics.log_likelihood_loss(y_tr, train_pred)
-    hamming_score = 1 - metric.hamming_loss(y_tr, prediction)
-    f1_micro_score = metric.f1_score(y_tr, prediction, average='micro')
-    f1_macro_score = metric.f1_score(y_tr, prediction, average='macro')
-
-    f = open('./' + dataset_name + '_train_Result.csv', 'a')
-    f.write('{},'.format(seed))
-    for i in range(num_classes): f.write('{} '.format(best_model_params[i]['lr']))
-    f.write(',')
-    for i in range(num_classes): f.write('{} '.format(best_model_params[i]['wd']))
-    f.write(',')
-    f.write('{},{},{},{},{},{}\n'.format(ema, jaccard_score, hamming_score, f1_micro_score, f1_macro_score, cll_loss))
-    f.close()
-
-    prediction = copy.deepcopy(test_pred)
-    for i in range(prediction.shape[0]):
-        is_correct = 0
-        for j in range(prediction.shape[1]):
-            if (prediction[i, j] >= 0.5 and prediction[i, j] < 1):
-                prediction[i, j] = 1
-            elif (prediction[i, j] < 0.5 and prediction[i, j] >= 0):
-                prediction[i, j] = 0
-
-    ema = metric.accuracy_score(y_ts, prediction)
-    jaccard_score = metrics.jaccard_score(y_ts, prediction)
-    cll_loss = metrics.log_likelihood_loss(y_ts, test_pred)
-    hamming_score = 1 - metric.hamming_loss(y_ts, prediction)
-    f1_micro_score = metric.f1_score(y_ts, prediction, average='micro')
-    f1_macro_score = metric.f1_score(y_ts, prediction, average='macro')
-
-    f = open('./' + dataset_name + '_test_Result.csv', 'a')
-    f.write('{},'.format(seed))
-    for i in range(num_classes): f.write('{} '.format(best_model_params[i]['lr']))
-    f.write(',')
-    for i in range(num_classes): f.write('{} '.format(best_model_params[i]['wd']))
-    f.write(',')
-    f.write('{},{},{},{},{},{}\n'.format( ema, jaccard_score, hamming_score, f1_micro_score, f1_macro_score, cll_loss))
-    f.close()
+            test_pred, accuracy, jaccard, hamming_score, f1_micro_score, f1_macro_score, cll_loss = test(model, test_loader)
+            f = open('./' + dataset_name + str(seed) + '_test_Result.csv', 'a')
+            f.write('{},{},{},{},{},{},{},{},{},{}\n'.format(model_num, epoch, lr, wd, accuracy, jaccard, hamming_score,
+                                                             f1_micro_score, f1_macro_score, cll_loss))
+            f.close()
